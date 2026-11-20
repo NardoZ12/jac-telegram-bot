@@ -11,97 +11,141 @@ const ALLOWED_CHATS = (process.env.TELEGRAM_ALLOWED_CHATS || "")
   .split(",")
   .map((id) => id.trim())
   .filter(Boolean);
+
 export const maxDuration = 60;
 
 const processedUpdates = new Set<number>();
+
 async function sendTelegramMessage(
   chatId: number | string,
   text: string,
   replyMarkup?: object
 ) {
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
       text,
-      parse_mode: "HTML",
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
     }),
   });
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    console.error("Error enviando mensaje a Telegram:", errBody);
+  }
 }
 
-function getDateOffset(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().split("T")[0];
+async function answerCallbackQuery(callbackQueryId: string) {
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId }),
+  });
+}
+
+function getMainMenuKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🚐 Pick-Up Hoy", callback_data: "pickup_today" },
+        { text: "📅 Pick-Up Mañana", callback_data: "pickup_tomorrow" },
+      ],
+      [{ text: "💰 Cuentas Vendedores", callback_data: "vendor_summary" }],
+    ],
+  };
+}
+
+function getDateString(offsetDays = 0): string {
+  const now = new Date();
+  const drTime = new Date(
+    now.toLocaleString("en-US", { timeZone: "America/Santo_Domingo" })
+  );
+  drTime.setDate(drTime.getDate() + offsetDays);
+  const year = drTime.getFullYear();
+  const month = String(drTime.getMonth() + 1).padStart(2, "0");
+  const day = String(drTime.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export async function POST(req: NextRequest) {
   try {
     const update = await req.json();
-if (update?.update_id) {
+
+    if (update?.update_id) {
       if (processedUpdates.has(update.update_id)) {
         return NextResponse.json({ ok: true, duplicate: true });
       }
       processedUpdates.add(update.update_id);
     }
-    // Manejar botones inline (Callbacks)
+
+    // 1. Manejar botones inline (Callbacks)
     if (update.callback_query) {
+      const callbackId = update.callback_query.id;
       const chatId = update.callback_query.message.chat.id;
       const data = update.callback_query.data as string;
+
+      await answerCallbackQuery(callbackId);
 
       if (ALLOWED_CHATS.length > 0 && !ALLOWED_CHATS.includes(String(chatId))) {
         return NextResponse.json({ ok: true });
       }
 
-      if (data === "pickup_hoy" || data === "pickup_manana") {
-        const targetDate = data === "pickup_hoy" ? getDateOffset(0) : getDateOffset(1);
+      if (data === "pickup_today" || data === "pickup_tomorrow") {
+        const offset = data === "pickup_today" ? 0 : 1;
+        const targetDate = getDateString(offset);
+        const label = data === "pickup_today" ? "HOY" : "MAÑANA";
         const rows = await getPickUpByDate(targetDate);
 
         if (rows.length === 0) {
           await sendTelegramMessage(
             chatId,
-            `📋 No hay pasajeros registrados en <b>PickUp_${targetDate}</b>.`
+            `📭 No hay pick-ups registrados para ${label} (${targetDate}).`,
+            getMainMenuKeyboard()
           );
-        } else {
-          const list = rows
-            .map(
-              (r, idx) =>
-                `${idx + 1}. ⏰ <b>${r[0]}</b> | 🏨 ${r[1]} (Hab: ${r[2]})\n   👤 ${r[3]} (${r[6]}) — <i>${r[5]}</i>\n   💵 Cobro: <b>${r[7]}</b> | Vendedor: ${r[8]}`
-            )
-            .join("\n\n");
-
-          await sendTelegramMessage(
-            chatId,
-            `🚐 <b>LISTA PICK-UP (${targetDate})</b>\nTotal reservas: ${rows.length}\n\n${list}`
-          );
+          return NextResponse.json({ ok: true });
         }
+
+        let msg = `🚐 LISTA DE PICK-UP ${label} (${targetDate})\nTotal reservas: ${rows.length}\n\n`;
+        rows.forEach((r, idx) => {
+          msg += `${idx + 1}. ⏰ ${r[0]} | 🏨 ${r[1]} (Hab: ${r[2]})\n`;
+          msg += `   👤 ${r[3]} (${r[6]}) — 🏝️ ${r[5]}\n`;
+          msg += `   💵 Cobrar: ${r[7]} | 🧑‍💼 ${r[8]}\n\n`;
+        });
+
+        await sendTelegramMessage(chatId, msg, getMainMenuKeyboard());
+        return NextResponse.json({ ok: true });
       }
 
-      if (data === "cuentas_vendedores") {
+      if (data === "vendor_summary") {
         const vendors = await getVendorSummary();
-        if (vendors.length === 0) {
-          await sendTelegramMessage(chatId, "📊 Aún no hay cuentas de vendedores registradas.");
-        } else {
-          const summaryText = vendors
-            .map(
-              (v) =>
-                `👤 <b>${v[0]}</b>\n   • Reservas: ${v[1]} (${v[2]} PAX)\n   • Vendido: $${v[3]} | Abonado: $${v[4]}\n   • 🔴 <b>Pendiente: $${v[5]}</b>`
-            )
-            .join("\n\n");
 
+        if (vendors.length === 0) {
           await sendTelegramMessage(
             chatId,
-            `💰 <b>ESTADO DE CUENTAS — VENDEDORES</b>\n\n${summaryText}`
+            "📭 Aún no hay cuentas de vendedores registradas.",
+            getMainMenuKeyboard()
           );
+          return NextResponse.json({ ok: true });
         }
+
+        let msg = `💰 RESUMEN CUENTAS VENDEDORES\n\n`;
+        for (const v of vendors) {
+          msg += `🧑‍💼 ${v[0]}\n`;
+          msg += `   • Reservas: ${v[1]} (${v[2]} PAX)\n`;
+          msg += `   • Vendido: $${v[3]} | Abonado: $${v[4]}\n`;
+          msg += `   • Pendiente: $${v[5]}\n\n`;
+        }
+
+        await sendTelegramMessage(chatId, msg, getMainMenuKeyboard());
+        return NextResponse.json({ ok: true });
       }
 
       return NextResponse.json({ ok: true });
     }
 
-    // Manejar mensajes de texto
+    // 2. Manejar mensajes de texto
     const message = update.message;
     if (!message || !message.text) {
       return NextResponse.json({ ok: true });
@@ -109,68 +153,67 @@ if (update?.update_id) {
 
     const chatId = message.chat.id;
     const text = message.text.trim();
-    const senderName =
-      [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") ||
-      "Staff JAC";
+    const senderName = [message.from?.first_name, message.from?.last_name]
+      .filter(Boolean)
+      .join(" ") || "Sin asignar";
 
-    // Verificar autorización
     if (ALLOWED_CHATS.length > 0 && !ALLOWED_CHATS.includes(String(chatId))) {
-      await sendTelegramMessage(
-        chatId,
-        `⛔ Acceso no autorizado. Tu ID de chat es: <code>${chatId}</code>`
-      );
+      await sendTelegramMessage(chatId, "⛔ Chat no autorizado.");
       return NextResponse.json({ ok: true });
     }
-
-    const mainKeyboard = {
-      inline_keyboard: [
-        [
-          { text: "🚐 Pick-Up Hoy", callback_data: "pickup_hoy" },
-          { text: "📅 Pick-Up Mañana", callback_data: "pickup_manana" },
-        ],
-        [{ text: "💰 Cuentas Vendedores", callback_data: "cuentas_vendedores" }],
-      ],
-    };
 
     if (text === "/start" || text === "/menu") {
       await sendTelegramMessage(
         chatId,
-        `🌴 <b>JAC Tour and Transfers — Sistema Operativo</b>\n\nReenvíame o pega cualquier mensaje de reserva de WhatsApp y lo guardaré automáticamente en Google Sheets.\n\nTambién puedes consultar tus reportes aquí:`,
-        mainKeyboard
+        "🌴 JAC Tour and Transfers — Panel Operativo\n\nReenvía o pega aquí cualquier mensaje de reserva de WhatsApp para registrarlo automáticamente en Google Sheets, o usa los botones:",
+        getMainMenuKeyboard()
       );
       return NextResponse.json({ ok: true });
     }
 
-    // Procesar texto como reserva de WhatsApp con Gemini
-    await sendTelegramMessage(chatId, "⏳ Analizando reserva y sincronizando con Google Sheets...");
+    await sendTelegramMessage(
+      chatId,
+      "⏳ Analizando reserva y sincronizando con Google Sheets..."
+    );
 
     const parsed = await parseWhatsAppReservation(text, senderName);
 
     if (!parsed.isReservation) {
       await sendTelegramMessage(
         chatId,
-        "⚠️ No detecté datos de una reserva turística en ese mensaje. Pega el texto de la reserva o usa el menú:",
-        mainKeyboard
+        "ℹ️ El mensaje no parece contener datos de una reserva turística. Pega un voucher o mensaje con fecha, hotel y excursión.",
+        getMainMenuKeyboard()
       );
       return NextResponse.json({ ok: true });
     }
 
     const saved = await saveReservationToSheets(parsed);
 
-    const confirmMsg =
-      `✅ <b>RESERVA REGISTRADA (${saved.reservaId})</b>\n\n` +
-      `📅 <b>Fecha:</b> ${parsed.fechaTour} — ⏰ ${parsed.horaPickUp}\n` +
-      `🏝 <b>Excursión:</b> ${parsed.excursion}\n` +
-      `👤 <b>Cliente:</b> ${parsed.nombreCliente} (${saved.totalPax} PAX)\n` +
-      `🏨 <b>Pick-Up:</b> ${parsed.hotelPuntoEncuentro} (Hab: ${parsed.habitacion})\n` +
-      `💼 <b>Vendedor:</b> ${parsed.vendedor}\n` +
-      `💵 <b>Total:</b> $${parsed.precioTotal} ${parsed.moneda} | <b>Pendiente:</b> $${parsed.saldoPendiente}\n\n` +
-      `📑 Guardado en <code>Reservas_Master</code>, <code>${saved.pickUpTab}</code> y <code>Cuentas_Vendedores</code>.`;
+    const estadoTexto =
+      parsed.saldoPendiente > 0
+        ? `Pendiente: $${parsed.saldoPendiente}`
+        : parsed.precioTotal > 0
+          ? "Pagado"
+          : "Monto por confirmar";
 
-    await sendTelegramMessage(chatId, confirmMsg, mainKeyboard);
+    const confirmationMsg =
+      `✅ RESERVA REGISTRADA (${saved.reservaId})\n\n` +
+      `📅 Fecha: ${parsed.fechaTour} — ⏰ ${parsed.horaPickUp}\n` +
+      `🏝️ Excursión: ${parsed.excursion}\n` +
+      `👤 Cliente: ${parsed.nombreCliente} (${saved.totalPax} PAX)\n` +
+      `🏨 Pick-Up: ${parsed.hotelPuntoEncuentro} (Hab: ${parsed.habitacion || "N/A"})\n` +
+      `💼 Vendedor: ${parsed.vendedor}\n` +
+      `💵 Total: $${parsed.precioTotal} ${parsed.moneda} | ${estadoTexto}\n\n` +
+      `📂 Guardado en Reservas_Master, ${saved.pickUpTab} y Cuentas_Vendedores.`;
+
+    await sendTelegramMessage(chatId, confirmationMsg, getMainMenuKeyboard());
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Error en webhook Telegram:", error);
-    return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Internal Server Error" },
+      { status: 500 }
+    );
   }
 }
