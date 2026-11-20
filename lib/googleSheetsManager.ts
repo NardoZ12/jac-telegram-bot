@@ -96,6 +96,13 @@ export async function saveReservationToSheets(data: ParsedReservation) {
   const totalPax = data.adultos + data.ninos + data.infantes;
   const pickUpTab = `PickUp_${data.fechaTour}`;
 
+  const estadoPago =
+    data.saldoPendiente > 0
+      ? "PENDIENTE PAGO"
+      : data.precioTotal > 0
+        ? "PAGADO"
+        : "POR CONFIRMAR";
+
   // 1. Asegurar pestañas necesarias
   await ensureSheetExists(sheets, "Reservas_Master", MASTER_HEADERS);
   await ensureSheetExists(sheets, pickUpTab, PICKUP_HEADERS);
@@ -122,7 +129,7 @@ export async function saveReservationToSheets(data: ParsedReservation) {
     data.saldoPendiente,
     data.moneda,
     data.metodoPago,
-    data.saldoPendiente > 0 ? "PENDIENTE PAGO" : "PAGADO",
+    estadoPago,
     data.notas || "",
   ];
 
@@ -144,7 +151,9 @@ export async function saveReservationToSheets(data: ParsedReservation) {
     `${data.adultos}A / ${data.ninos}N / ${data.infantes}I`,
     data.saldoPendiente > 0
       ? `${data.saldoPendiente} ${data.moneda}`
-      : "PAGADO",
+      : data.precioTotal > 0
+        ? "PAGADO"
+        : "POR CONFIRMAR",
     data.vendedor,
     data.notas || "",
   ];

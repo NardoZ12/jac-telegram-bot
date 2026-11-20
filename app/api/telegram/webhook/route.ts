@@ -11,7 +11,9 @@ const ALLOWED_CHATS = (process.env.TELEGRAM_ALLOWED_CHATS || "")
   .split(",")
   .map((id) => id.trim())
   .filter(Boolean);
+export const maxDuration = 60;
 
+const processedUpdates = new Set<number>();
 async function sendTelegramMessage(
   chatId: number | string,
   text: string,
@@ -38,7 +40,12 @@ function getDateOffset(days: number): string {
 export async function POST(req: NextRequest) {
   try {
     const update = await req.json();
-
+if (update?.update_id) {
+      if (processedUpdates.has(update.update_id)) {
+        return NextResponse.json({ ok: true, duplicate: true });
+      }
+      processedUpdates.add(update.update_id);
+    }
     // Manejar botones inline (Callbacks)
     if (update.callback_query) {
       const chatId = update.callback_query.message.chat.id;
