@@ -4,8 +4,7 @@ import { ParsedReservation } from "./whatsappParser";
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID!;
 const LOGO_URL =
   process.env.COMPANY_LOGO_URL ||
-  "https://jac-telegram-bot.vercel.app/logo-quality.png";
-
+  "https://lh3.googleusercontent.com/d/1_gKtQHqIoFphnTAZHd9ajw8plAmzZZC3";
 function getSheetsClient() {
   const auth = new google.auth.JWT({
     email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -126,7 +125,7 @@ async function ensureStyledPickUpSheet(
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [
-        ["", "", "", "", `=IMAGE("${LOGO_URL}")`, "", "", "", "", ""],
+        ["", "", "", "", `=IMAGE("${LOGO_URL}", 1)`, "", "", "", "", ""],
         ["", "", "", "", "", "", "", "", "", ""],
         ["", "", "", "EXPEDIA AND VIATOR SUPLIER", "", "", "", "", "", ""],
         ["", "", `FECHA:${fechaFormateada}`, "C/PASTOR MAXIMO NO. 8", "", "", "", "", "", ""],
