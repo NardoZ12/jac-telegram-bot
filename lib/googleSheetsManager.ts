@@ -2,6 +2,9 @@ import { google } from "googleapis";
 import { ParsedReservation } from "./whatsappParser";
 
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID!;
+const LOGO_URL =
+  process.env.COMPANY_LOGO_URL ||
+  "https://jac-telegram-bot.vercel.app/logo-quality.png";
 
 function getSheetsClient() {
   const auth = new google.auth.JWT({
@@ -38,16 +41,16 @@ const MASTER_HEADERS = [
 ];
 
 const PICKUP_HEADERS = [
-  "Hora Pick-Up",
-  "Hotel / Punto",
-  "Habitación",
-  "Cliente",
-  "Teléfono",
-  "Excursión",
-  "PAX (A/N/I)",
-  "Cobrar al Abordar",
-  "Vendedor",
-  "Notas",
+  "SERVICIO",
+  "HORA",
+  "HOTEL",
+  "OPERADOR",
+  "REPRESENTANTE",
+  "NOMBRE",
+  "PAX",
+  "HABITACION",
+  "TRANSPORT",
+  "DEBEN",
 ];
 
 const VENDEDORES_HEADERS = [
@@ -60,7 +63,13 @@ const VENDEDORES_HEADERS = [
   "Última Actualización",
 ];
 
-async function ensureSheetExists(
+function formatDateDDMMYYYY(isoDate: string): string {
+  const parts = isoDate.split("-");
+  if (parts.length !== 3) return isoDate;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+async function ensureMasterOrVendorSheet(
   sheets: ReturnType<typeof getSheetsClient>,
   title: string,
   headers: string[]
@@ -87,6 +96,180 @@ async function ensureSheetExists(
   }
 }
 
+async function ensureStyledPickUpSheet(
+  sheets: ReturnType<typeof getSheetsClient>,
+  title: string,
+  fechaTourISO: string
+) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const exists = meta.data.sheets?.some(
+    (s) => s.properties?.title === title
+  );
+
+  if (exists) return;
+
+  // 1. Crear pestaña nueva y obtener su sheetId
+  const addRes = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [{ addSheet: { properties: { title } } }],
+    },
+  });
+
+  const sheetId = addRes.data.replies?.[0]?.addSheet?.properties?.sheetId;
+  const fechaFormateada = formatDateDDMMYYYY(fechaTourISO);
+
+  // 2. Escribir cabecera corporativa + encabezados en fila 7
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${title}'!A1:J7`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [
+        ["", "", "", "", `=IMAGE("${LOGO_URL}")`, "", "", "", "", ""],
+        ["", "", "", "", "", "", "", "", "", ""],
+        ["", "", "", "EXPEDIA AND VIATOR SUPLIER", "", "", "", "", "", ""],
+        ["", "", `FECHA:${fechaFormateada}`, "C/PASTOR MAXIMO NO. 8", "", "", "", "", "", ""],
+        ["", "", "", "CEIBA DEL SALADO. BAVARO PUNTA CANA", "", "", "", "", "", ""],
+        ["", "", "", "", "RNC:1-31-477-453", "", "", "", "", ""],
+        PICKUP_HEADERS,
+      ],
+    },
+  });
+
+  if (sheetId === undefined) return;
+
+  // 3. Aplicar estilo visual idéntico a ORDEN EDITADA (combinaciones, fuentes, grises, bordes y anchos)
+  const colWidths = [160, 85, 290, 140, 175, 220, 110, 125, 115, 135];
+  const dimensionRequests = colWidths.map((px, idx) => ({
+    updateDimensionProperties: {
+      range: {
+        sheetId,
+        dimension: "COLUMNS",
+        startIndex: idx,
+        endIndex: idx + 1,
+      },
+      properties: { pixelSize: px },
+      fields: "pixelSize",
+    },
+  }));
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [
+        // Combinar espacio del logo (E1:G2) y líneas de dirección (D3:F3, D4:F4, D5:F5, E6:F6)
+        {
+          mergeCells: {
+            range: { sheetId, startRowIndex: 0, endRowIndex: 2, startColumnIndex: 4, endColumnIndex: 7 },
+            mergeType: "MERGE_ALL",
+          },
+        },
+        {
+          mergeCells: {
+            range: { sheetId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 3, endColumnIndex: 6 },
+            mergeType: "MERGE_ALL",
+          },
+        },
+        {
+          mergeCells: {
+            range: { sheetId, startRowIndex: 3, endRowIndex: 4, startColumnIndex: 3, endColumnIndex: 6 },
+            mergeType: "MERGE_ALL",
+          },
+        },
+        {
+          mergeCells: {
+            range: { sheetId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 3, endColumnIndex: 6 },
+            mergeType: "MERGE_ALL",
+          },
+        },
+        {
+          mergeCells: {
+            range: { sheetId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 4, endColumnIndex: 6 },
+            mergeType: "MERGE_ALL",
+          },
+        },
+        // Altura de filas de cabecera y encabezados
+        {
+          updateDimensionProperties: {
+            range: { sheetId, dimension: "ROWS", startIndex: 0, endIndex: 2 },
+            properties: { pixelSize: 42 },
+            fields: "pixelSize",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: { sheetId, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+            properties: { pixelSize: 34 },
+            fields: "pixelSize",
+          },
+        },
+        // Estilo texto cabecera corporativa (Filas 3-6)
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 2, endRowIndex: 6, startColumnIndex: 2, endColumnIndex: 7 },
+            cell: {
+              userEnteredFormat: {
+                horizontalAlignment: "CENTER",
+                verticalAlignment: "MIDDLE",
+                textFormat: { fontFamily: "Times New Roman", fontSize: 11, bold: true },
+              },
+            },
+            fields: "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat)",
+          },
+        },
+        // Fila 7: Encabezados con fondo gris (#808080), negrita y bordes
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 0, endColumnIndex: 10 },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: { red: 0.5, green: 0.5, blue: 0.5 },
+                horizontalAlignment: "CENTER",
+                verticalAlignment: "MIDDLE",
+                textFormat: {
+                  fontFamily: "Times New Roman",
+                  fontSize: 12,
+                  bold: true,
+                  foregroundColor: { red: 0, green: 0, blue: 0 },
+                },
+                borders: {
+                  top: { style: "SOLID" },
+                  bottom: { style: "SOLID" },
+                  left: { style: "SOLID" },
+                  right: { style: "SOLID" },
+                },
+              },
+            },
+            fields: "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat,borders)",
+          },
+        },
+        // Formato base de filas de datos (Filas 8 a 100) con bordes finos y negrita
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 7, endRowIndex: 100, startColumnIndex: 0, endColumnIndex: 10 },
+            cell: {
+              userEnteredFormat: {
+                horizontalAlignment: "CENTER",
+                verticalAlignment: "MIDDLE",
+                textFormat: { fontFamily: "Arial", fontSize: 11, bold: true },
+                borders: {
+                  top: { style: "SOLID" },
+                  bottom: { style: "SOLID" },
+                  left: { style: "SOLID" },
+                  right: { style: "SOLID" },
+                },
+              },
+            },
+            fields: "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat,borders)",
+          },
+        },
+        ...dimensionRequests,
+      ],
+    },
+  });
+}
+
 export async function saveReservationToSheets(data: ParsedReservation) {
   const sheets = getSheetsClient();
   const now = new Date().toLocaleString("es-DO", {
@@ -103,10 +286,10 @@ export async function saveReservationToSheets(data: ParsedReservation) {
         ? "PAGADO"
         : "POR CONFIRMAR";
 
-  // 1. Asegurar pestañas necesarias
-  await ensureSheetExists(sheets, "Reservas_Master", MASTER_HEADERS);
-  await ensureSheetExists(sheets, pickUpTab, PICKUP_HEADERS);
-  await ensureSheetExists(sheets, "Cuentas_Vendedores", VENDEDORES_HEADERS);
+  // 1. Asegurar pestañas necesarias (PickUp con estilo corporativo del cliente)
+  await ensureMasterOrVendorSheet(sheets, "Reservas_Master", MASTER_HEADERS);
+  await ensureStyledPickUpSheet(sheets, pickUpTab, data.fechaTour);
+  await ensureMasterOrVendorSheet(sheets, "Cuentas_Vendedores", VENDEDORES_HEADERS);
 
   // 2. Insertar en Reservas_Master
   const masterRow = [
@@ -140,27 +323,34 @@ export async function saveReservationToSheets(data: ParsedReservation) {
     requestBody: { values: [masterRow] },
   });
 
-  // 3. Insertar en la lista diaria PickUp_YYYY-MM-DD
-  const pickUpRow = [
-    data.horaPickUp,
-    data.hotelPuntoEncuentro,
-    data.habitacion || "N/A",
-    data.nombreCliente,
-    data.telefonoCliente || "N/A",
-    data.excursion,
-    `${data.adultos}A / ${data.ninos}N / ${data.infantes}I`,
+  // 3. Formatear PAX y DEBEN al estilo exacto del cliente (ej. "3+3" y "315US")
+  const paxFormatted =
+    data.ninos > 0 || data.infantes > 0
+      ? `${data.adultos}+${data.ninos + data.infantes}`
+      : `${data.adultos}`;
+
+  const debenFormatted =
     data.saldoPendiente > 0
-      ? `${data.saldoPendiente} ${data.moneda}`
-      : data.precioTotal > 0
-        ? "PAGADO"
-        : "POR CONFIRMAR",
-    data.vendedor,
-    data.notas || "",
+      ? `${data.saldoPendiente}${data.moneda === "USD" ? "US" : data.moneda}`
+      : "";
+
+  // Insertar en la lista diaria PickUp_YYYY-MM-DD (a partir de fila 8)
+  const pickUpRow = [
+    data.excursion.toUpperCase(),
+    data.horaPickUp.replace(/\s*(AM|PM)/i, ""),
+    data.hotelPuntoEncuentro.toUpperCase(),
+    "JAC",
+    data.vendedor.toUpperCase(),
+    data.nombreCliente.toUpperCase(),
+    paxFormatted,
+    data.habitacion || "",
+    "QT",
+    debenFormatted,
   ];
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: `'${pickUpTab}'!A:J`,
+    range: `'${pickUpTab}'!A8:J`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [pickUpRow] },
   });
@@ -235,7 +425,7 @@ export async function getPickUpByDate(dateStr: string) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `'${tabName}'!A2:J`,
+      range: `'${tabName}'!A8:J`,
     });
     return res.data.values || [];
   } catch {

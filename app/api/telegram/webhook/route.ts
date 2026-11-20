@@ -109,9 +109,9 @@ export async function POST(req: NextRequest) {
 
         let msg = `🚐 LISTA DE PICK-UP ${label} (${targetDate})\nTotal reservas: ${rows.length}\n\n`;
         rows.forEach((r, idx) => {
-          msg += `${idx + 1}. ⏰ ${r[0]} | 🏨 ${r[1]} (Hab: ${r[2]})\n`;
-          msg += `   👤 ${r[3]} (${r[6]}) — 🏝️ ${r[5]}\n`;
-          msg += `   💵 Cobrar: ${r[7]} | 🧑‍💼 ${r[8]}\n\n`;
+          msg += `${idx + 1}. ⏰ ${r[1] || ""} | 🏨 ${r[2] || ""} (Hab: ${r[7] || "N/A"})\n`;
+          msg += `   👤 ${r[5] || ""} (${r[6] || ""} PAX) — 🏝️ ${r[0] || ""}\n`;
+          msg += `   💵 Deben: ${r[9] || "PAGADO"} | 🧑‍💼 Rep: ${r[4] || ""}\n\n`;
         });
 
         await sendTelegramMessage(chatId, msg, getMainMenuKeyboard());
@@ -153,9 +153,10 @@ export async function POST(req: NextRequest) {
 
     const chatId = message.chat.id;
     const text = message.text.trim();
-    const senderName = [message.from?.first_name, message.from?.last_name]
-      .filter(Boolean)
-      .join(" ") || "Sin asignar";
+    const senderName =
+      [message.from?.first_name, message.from?.last_name]
+        .filter(Boolean)
+        .join(" ") || "Sin asignar";
 
     if (ALLOWED_CHATS.length > 0 && !ALLOWED_CHATS.includes(String(chatId))) {
       await sendTelegramMessage(chatId, "⛔ Chat no autorizado.");
