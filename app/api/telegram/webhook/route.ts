@@ -205,7 +205,7 @@ export async function POST(req: NextRequest) {
       `🏨 Pick-Up: ${parsed.hotelPuntoEncuentro} (Hab: ${parsed.habitacion || "N/A"})\n` +
       `💼 Vendedor: ${parsed.vendedor}\n` +
       `💵 Total: $${parsed.precioTotal} ${parsed.moneda} | ${estadoTexto}\n\n` +
-      `📂 Guardado en Reservas_Master, ${saved.pickUpTab || "pendiente de asignar a fecha"}, Cuentas_Vendedores y ${saved.vendorTab}.`;
+      `📂 Guardado en Reservas_Master, ${saved.pickUpTab}, Cuentas_Vendedores y ${saved.vendorBillingTab}.`;
 
     await sendTelegramMessage(chatId, confirmationMsg, getMainMenuKeyboard());
 
