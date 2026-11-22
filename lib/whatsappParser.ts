@@ -32,7 +32,8 @@ const reservationSchema: Schema = {
     },
     fechaTour: {
       type: Type.STRING,
-      description: "Fecha del tour o traslado en formato YYYY-MM-DD.",
+      description:
+        "Fecha del tour o traslado en formato YYYY-MM-DD. Si el mensaje no contiene un día, fecha o referencia temporal inequívoca, devuelve exactamente 'Por confirmar'.",
     },
     horaPickUp: {
       type: Type.STRING,
@@ -122,13 +123,15 @@ export async function parseWhatsAppReservation(
   rawText: string,
   senderFallback: string
 ): Promise<ParsedReservation> {
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = getDominicanDate();
 
   const prompt = `Eres el asistente operativo de "JAC Tour and Transfers" en Punta Cana, República Dominicana.
 Analiza el siguiente mensaje copiado de WhatsApp y extrae los datos estructurados de la reserva turística.
 
 Reglas:
 - Fecha actual de referencia: ${todayStr}.
+- Devuelve fechaTour en formato YYYY-MM-DD únicamente cuando el mensaje indica explícitamente un día o una referencia temporal ("hoy", "mañana", "pasado mañana", día de la semana, fecha con números o mes).
+- Si el mensaje NO menciona cuándo se realizará el tour o traslado, fechaTour debe ser exactamente "Por confirmar". Nunca uses la fecha actual como valor predeterminado.
 - Si el mensaje no menciona quién es el vendedor, usa: "${senderFallback}".
 - Normaliza nombres de hoteles conocidos de Punta Cana / Bávaro / Cap Cana / Uvero Alto si vienen abreviados.
 - Si el texto dice "Pendiente: 50" o "Cobra chofer 50", colócalo en saldoPendiente y reflejalo en metodoPago.
@@ -162,7 +165,15 @@ const candidates = [
       });
 
       const jsonText = response.text || "{}";
-      return JSON.parse(jsonText) as ParsedReservation;
+      const parsed = JSON.parse(jsonText) as ParsedReservation;
+
+      if (!hasDateReference(rawText)) {
+        parsed.fechaTour = "Por confirmar";
+      } else if (!isValidISODate(parsed.fechaTour)) {
+        parsed.fechaTour = "Por confirmar";
+      }
+
+      return parsed;
     } catch (err) {
       lastError = err;
       console.warn(`Modelo ${modelName} ocupado, pasando al siguiente...`);
@@ -170,4 +181,49 @@ const candidates = [
   }
 
   throw lastError;
+}
+
+function getDominicanDate(): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Santo_Domingo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value || "";
+
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function hasDateReference(text: string): boolean {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  return [
+    /\b(hoy|manana|pasado manana|esta noche|siguiente semana)\b/,
+    /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/,
+    /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/,
+    /\b\d{1,2}\s*[/.-]\s*\d{1,2}(?:\s*[/.-]\s*\d{2,4})?\b/,
+    /\b\d{4}-\d{2}-\d{2}\b/,
+    /\bel\s+\d{1,2}\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isValidISODate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
 }

@@ -62,6 +62,20 @@ const VENDEDORES_HEADERS = [
   "Última Actualización",
 ];
 
+const VENDOR_ACCOUNT_HEADERS = [
+  "ID Reserva",
+  "Fecha Registro",
+  "Fecha Tour",
+  "Cliente",
+  "Excursión",
+  "Total PAX",
+  "Total",
+  "Abonado",
+  "Saldo Pendiente",
+  "Moneda",
+  "Estado",
+];
+
 function formatDateDDMMYYYY(isoDate: string): string {
   const parts = isoDate.split("-");
   if (parts.length !== 3) return isoDate;
@@ -86,12 +100,14 @@ async function ensureMasterOrVendorSheet(
       },
     });
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `'${title}'!A1`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [headers] },
-    });
+    if (headers.length > 0) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `'${title}'!A1`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [headers] },
+      });
+    }
   }
 }
 
@@ -276,7 +292,11 @@ export async function saveReservationToSheets(data: ParsedReservation) {
   });
   const reservaId = `JAC-${Date.now().toString().slice(-6)}`;
   const totalPax = data.adultos + data.ninos + data.infantes;
-  const pickUpTab = `PickUp_${data.fechaTour}`;
+  const fechaTour = isValidISODate(data.fechaTour)
+    ? data.fechaTour
+    : "Por confirmar";
+  const pickUpTab =
+    fechaTour === "Por confirmar" ? null : `PickUp_${fechaTour}`;
 
   const estadoPago =
     data.saldoPendiente > 0
@@ -287,14 +307,16 @@ export async function saveReservationToSheets(data: ParsedReservation) {
 
   // 1. Asegurar pestañas necesarias (PickUp con estilo corporativo del cliente)
   await ensureMasterOrVendorSheet(sheets, "Reservas_Master", MASTER_HEADERS);
-  await ensureStyledPickUpSheet(sheets, pickUpTab, data.fechaTour);
   await ensureMasterOrVendorSheet(sheets, "Cuentas_Vendedores", VENDEDORES_HEADERS);
+  if (pickUpTab) {
+    await ensureStyledPickUpSheet(sheets, pickUpTab, fechaTour);
+  }
 
   // 2. Insertar en Reservas_Master
   const masterRow = [
     reservaId,
     now,
-    data.fechaTour,
+    fechaTour,
     data.horaPickUp,
     data.nombreCliente,
     data.telefonoCliente || "N/A",
@@ -347,22 +369,25 @@ export async function saveReservationToSheets(data: ParsedReservation) {
     debenFormatted,
   ];
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `'${pickUpTab}'!A8:J`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [pickUpRow] },
-  });
+  if (pickUpTab) {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `'${pickUpTab}'!A8:J`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [pickUpRow] },
+    });
+  }
 
-  // 4. Recalcular resumen en Cuentas_Vendedores
-  await recalculateVendorAccounts(sheets, now);
+  // 4. Recalcular resumen general y hojas de cobro individuales.
+  const vendorTab = await recalculateVendorAccounts(sheets, now, data.vendedor);
 
-  return { reservaId, pickUpTab, totalPax };
+  return { reservaId, pickUpTab, vendorTab, totalPax };
 }
 
 async function recalculateVendorAccounts(
   sheets: ReturnType<typeof getSheetsClient>,
-  timestamp: string
+  timestamp: string,
+  currentVendor: string
 ) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
@@ -370,10 +395,17 @@ async function recalculateVendorAccounts(
   });
 
   const rows = res.data.values || [];
-  const summary: Record<
+  const vendors = new Map<
     string,
-    { reservas: number; pax: number; total: number; abonado: number; pendiente: number }
-  > = {};
+    {
+      reservas: number;
+      pax: number;
+      total: number;
+      abonado: number;
+      pendiente: number;
+      details: string[][];
+    }
+  >();
 
   for (const row of rows) {
     const vendedor = (row[13] || "Sin asignar").trim();
@@ -382,17 +414,38 @@ async function recalculateVendorAccounts(
     const abonado = Number(row[15]) || 0;
     const pendiente = Number(row[16]) || 0;
 
-    if (!summary[vendedor]) {
-      summary[vendedor] = { reservas: 0, pax: 0, total: 0, abonado: 0, pendiente: 0 };
+    if (!vendors.has(vendedor)) {
+      vendors.set(vendedor, {
+        reservas: 0,
+        pax: 0,
+        total: 0,
+        abonado: 0,
+        pendiente: 0,
+        details: [],
+      });
     }
-    summary[vendedor].reservas += 1;
-    summary[vendedor].pax += pax;
-    summary[vendedor].total += total;
-    summary[vendedor].abonado += abonado;
-    summary[vendedor].pendiente += pendiente;
+    const vendor = vendors.get(vendedor)!;
+    vendor.reservas += 1;
+    vendor.pax += pax;
+    vendor.total += total;
+    vendor.abonado += abonado;
+    vendor.pendiente += pendiente;
+    vendor.details.push([
+      row[0] || "",
+      row[1] || "",
+      row[2] || "Por confirmar",
+      row[4] || "",
+      row[8] || "",
+      String(pax),
+      String(total),
+      String(abonado),
+      String(pendiente),
+      row[17] || "USD",
+      row[19] || "",
+    ]);
   }
 
-  const vendorRows = Object.entries(summary).map(([vendedor, s]) => [
+  const vendorRows = [...vendors.entries()].map(([vendedor, s]) => [
     vendedor,
     s.reservas,
     s.pax,
@@ -415,6 +468,38 @@ async function recalculateVendorAccounts(
       requestBody: { values: vendorRows },
     });
   }
+
+  let currentVendorTab = "";
+  for (const [vendedor, account] of vendors) {
+    const title = getVendorAccountSheetTitle(vendedor);
+    await ensureMasterOrVendorSheet(sheets, title, []);
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${quoteSheetRange(title, "A1:K")}`,
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: quoteSheetRange(title, "A1"),
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [
+          ["CUENTA DE COBRO DEL VENDEDOR"],
+          ["Vendedor", vendedor],
+          ["Saldo total", account.pendiente],
+          ["Total vendido", account.total],
+          ["Total abonado", account.abonado],
+          ["Última actualización", timestamp],
+          VENDOR_ACCOUNT_HEADERS,
+          ...account.details,
+        ],
+      },
+    });
+    if (vendedor === currentVendor.trim()) {
+      currentVendorTab = title;
+    }
+  }
+
+  return currentVendorTab || getVendorAccountSheetTitle(currentVendor);
 }
 
 export async function getPickUpByDate(dateStr: string) {
@@ -443,4 +528,39 @@ export async function getVendorSummary() {
   } catch {
     return [];
   }
+}
+
+function isValidISODate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function getVendorAccountSheetTitle(vendor: string): string {
+  const base = vendor
+    .replace(/[\\/*?:[\]]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 72) || "Sin_asignar";
+  let hash = 2166136261;
+  for (const char of vendor) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return `Cobro_${base}_${(hash >>> 0).toString(16).slice(-6)}`;
+}
+
+function quoteSheetRange(title: string, range: string): string {
+  return `'${title.replace(/'/g, "''")}'!${range}`;
 }
